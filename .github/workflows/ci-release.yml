@@ -1,0 +1,99 @@
+name: CI / Release
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建校验（标签触发时出包）
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+          cache: true
+
+      - name: 构建（Release）
+        run: dotnet build LiteMonitor.sln -c Release
+
+      - name: 版本一致性守卫（tag == csproj Version）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tagVer = "${{ github.ref_name }}".TrimStart('v')
+          $projVer = (dotnet msbuild LiteMonitor.csproj -getProperty:Version | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 1).Trim()
+          Write-Host "tag 版本: $tagVer / csproj 版本: $projVer"
+          if ($tagVer -ne $projVer) {
+            Write-Error "tag 版本（$tagVer）与 csproj Version（$projVer）不一致：请先提交版本号变更，再重新打标签。"
+            exit 1
+          }
+
+      - name: 单文件发布（对齐上游包结构）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          dotnet publish LiteMonitor.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
+
+      - name: 打包为 LiteMonitor_v版本-win-x64.zip
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart('v')
+          $pkg = "LiteMonitor_v$v-win-x64"
+          New-Item -ItemType Directory -Path "dist/$pkg" -Force | Out-Null
+          Copy-Item -Path "publish/*" -Destination "dist/$pkg" -Recurse -Force
+          Compress-Archive -Path "dist/$pkg" -DestinationPath "dist/$pkg.zip" -Force
+          Get-ChildItem "dist/$pkg" -Recurse | Select-Object -First 20 -ExpandProperty FullName
+
+      - name: 上传发布包产物
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-zip
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: 创建 Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码（读取发布说明）
+        uses: actions/checkout@v7
+
+      - name: 下载发布包
+        uses: actions/download-artifact@v8
+        with:
+          name: release-zip
+          path: dist
+
+      - name: 生成发布说明（取自 version.json）
+        run: |
+          {
+            echo "Changelog:"
+            jq -r .changelog resources/version.json
+            echo ""
+            echo "Release Date:"
+            jq -r .releaseDate resources/version.json
+          } > notes.md
+          cat notes.md
+
+      - name: 创建 Release 并附加发布包
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/*.zip \
+            --title "LiteMonitor_${GITHUB_REF_NAME}" \
+            --notes-file notes.md
