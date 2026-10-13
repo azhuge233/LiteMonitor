@@ -22,7 +22,6 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
-          cache: true
 
       - name: 构建（Release）
         run: dotnet build LiteMonitor.sln -c Release
