@@ -17,9 +17,25 @@ namespace LiteMonitor
             bool isZh = LanguageManager.CurrentLang == "zh";
 
             string strTitle = LanguageManager.T("Menu.About");
-            string strDesc = isZh ? "一款开源的轻量级硬件监控软件。\n© 2025 Diorser / LiteMonitor Project" 
-                                  : "A lightweight desktop hardware monitor.\n© 2025 Diorser / LiteMonitor Project";
-            string strWebPrefix = isZh ? "官网" : "Website";
+
+            // 版权行年份动态：起始年 2025（项目首发年）+ 当前年，跨年自动跟随
+            const int startYear = 2025;
+            int yearNow = DateTime.Now.Year;
+            string strCopyright = yearNow > startYear
+                ? $"© {startYear}–{yearNow} Diorser / LiteMonitor Project"
+                : $"© {startYear} Diorser / LiteMonitor Project";
+
+            string strDesc = isZh ? $"一款开源的轻量级硬件监控软件。\n{strCopyright}"
+                                  : $"A lightweight desktop hardware monitor.\n{strCopyright}";
+
+            // 署名三行：原作者/原仓库、原官网 与 本源（fork）并列表述，互不覆盖
+            string sep = isZh ? "：" : ": ";
+            string lblOriginal = isZh ? "原项目" : "Original project";
+            string lblWebsite = isZh ? "原官网" : "Original website";
+            string lblFork = isZh ? "本版本（Fork）" : "This build (fork)";
+            string strOriginalLine = $"{lblOriginal}{sep}Diorser — github.com/Diorser/LiteMonitor";
+            string strWebLine = $"{lblWebsite}{sep}litemonitor.cn";
+            string strForkLine = $"{lblFork}{sep}azhuge233 — github.com/azhuge233/LiteMonitor";
             string strUpdate = LanguageManager.T("Menu.CheckUpdate");
             string strClose = LanguageManager.T("Menu.OK");
             string strBug = LanguageManager.T("Menu.Feedback");
@@ -35,7 +51,7 @@ namespace LiteMonitor
             
             // ★★★ DPI 修复：计算缩放系数并应用 ★★★
             UIUtils.ScaleFactor = this.DeviceDpi / 96f;
-            ClientSize = UIUtils.S(new Size(360, 280));
+            ClientSize = UIUtils.S(new Size(360, 280));   // 兜底尺寸；构造函数末尾按最宽内容行自适应
 
             var theme = ThemeManager.Current;
             BackColor = ThemeManager.ParseColor(theme.Color.Background);
@@ -47,7 +63,7 @@ namespace LiteMonitor
                 Font = new Font(theme.Font.Family, 14, FontStyle.Bold),
                 ForeColor = ThemeManager.ParseColor(theme.Color.TextTitle),
                 AutoSize = true,
-                Location = new Point(UIUtils.S(22), UIUtils.S(28))
+                Location = new Point(UIUtils.S(22), UIUtils.S(24))
             };
 
             // === 简洁版本号 ===
@@ -63,7 +79,7 @@ namespace LiteMonitor
             {
                 Text = $"Version {version}",
                 ForeColor = ThemeManager.ParseColor(theme.Color.TextPrimary),
-                Location = new Point(UIUtils.S(32), UIUtils.S(68)),
+                Location = new Point(UIUtils.S(32), UIUtils.S(62)),
                 AutoSize = true
             };
 
@@ -72,18 +88,18 @@ namespace LiteMonitor
             {
                 Text = strDesc,
                 ForeColor = ThemeManager.ParseColor(theme.Color.TextPrimary),
-                Location = new Point(UIUtils.S(32), UIUtils.S(98)),
+                Location = new Point(UIUtils.S(32), UIUtils.S(92)),
                 AutoSize = true
             };
 
             // === 官网链接 ===
             var websiteLink = new LinkLabel
             {
-                Text = $"{strWebPrefix}: LiteMonitor.cn",
+                Text = strWebLine,
                 LinkColor = Color.SkyBlue,
                 ActiveLinkColor = Color.LightSkyBlue,
                 VisitedLinkColor = Color.DeepSkyBlue,
-                Location = new Point(UIUtils.S(32), UIUtils.S(150)),
+                Location = new Point(UIUtils.S(32), UIUtils.S(167)),
                 AutoSize = true
             };
             websiteLink.LinkClicked += (_, __) =>
@@ -99,11 +115,11 @@ namespace LiteMonitor
             // === GitHub 链接 ===
             var githubLink = new LinkLabel
             {
-                Text = "GitHub: github.com/Diorser/LiteMonitor",
+                Text = strOriginalLine,
                 LinkColor = Color.SkyBlue,
                 ActiveLinkColor = Color.LightSkyBlue,
                 VisitedLinkColor = Color.DeepSkyBlue,
-                Location = new Point(UIUtils.S(32), UIUtils.S(175)),
+                Location = new Point(UIUtils.S(32), UIUtils.S(142)),
                 AutoSize = true
             };
             githubLink.LinkClicked += (_, __) =>
@@ -111,6 +127,26 @@ namespace LiteMonitor
                 try
                 {
                     Process.Start(new ProcessStartInfo("https://github.com/Diorser/LiteMonitor")
+                    { UseShellExecute = true });
+                }
+                catch { }
+            };
+
+            // === 本源（fork）仓库链接 ===
+            var forkLink = new LinkLabel
+            {
+                Text = strForkLine,
+                LinkColor = Color.SkyBlue,
+                ActiveLinkColor = Color.LightSkyBlue,
+                VisitedLinkColor = Color.DeepSkyBlue,
+                Location = new Point(UIUtils.S(32), UIUtils.S(192)),
+                AutoSize = true
+            };
+            forkLink.LinkClicked += (_, __) =>
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo("https://github.com/azhuge233/LiteMonitor")
                     { UseShellExecute = true });
                 }
                 catch { }
@@ -135,7 +171,7 @@ namespace LiteMonitor
             {
                 try
                 {
-                    Process.Start(new ProcessStartInfo("https://github.com/Diorser/LiteMonitor/issues")
+                    Process.Start(new ProcessStartInfo("https://github.com/azhuge233/LiteMonitor/issues")
                     { UseShellExecute = true });
                 }
                 catch { }
@@ -174,8 +210,17 @@ namespace LiteMonitor
             btnClose.FlatAppearance.BorderSize = 0;           // ✅ 移除白边框
             btnClose.FlatAppearance.MouseOverBackColor = ThemeManager.ParseColor(theme.Color.BarBackground);
 
-            // 别忘了把新按钮 btnBug 加入集合
-            Controls.AddRange([lblTitle, lblVer, lblDesc, websiteLink, githubLink, btnBug, btnCheckUpdate, btnClose]);
+            // 别忘了把新按钮 btnBug 加入集合（forkLink 同理）
+            Controls.AddRange([lblTitle, lblVer, lblDesc, websiteLink, githubLink, forkLink, btnBug, btnCheckUpdate, btnClose]);
+
+            // === 版式自适应：窗口宽度按最宽文本行取值（新增署名行不会截断文字）===
+            int maxTextW = 0;
+            foreach (Control c in Controls)
+            {
+                if (c is Label lbl)   // LinkLabel 继承自 Label，一并覆盖
+                    maxTextW = Math.Max(maxTextW, lbl.PreferredWidth);
+            }
+            ClientSize = new Size(Math.Max(UIUtils.S(360), maxTextW + UIUtils.S(64)), UIUtils.S(280));
         }
     }
 }
