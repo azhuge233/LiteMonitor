@@ -18,10 +18,10 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v7
 
-      - name: 安装 .NET 8
+      - name: 安装 .NET 10
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: 构建（Release）
         run: dotnet build LiteMonitor.sln -c Release

@@ -351,9 +351,10 @@ namespace LiteMonitor.src.SystemServices
                 {
                     try
                     {
-                        while (!_presentMonProc.StandardOutput.EndOfStream)
+                        while (true)
                         {
                             string? line = await _presentMonProc.StandardOutput.ReadLineAsync();
+                            if (line == null) break; // CA2024：以 ReadLineAsync 返回 null 判定 EOF，避免异步中同步检查 EndOfStream
                             if (!string.IsNullOrWhiteSpace(line)) 
                             {
                                 // 解析输出数据

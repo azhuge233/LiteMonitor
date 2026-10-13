@@ -96,7 +96,7 @@ namespace LiteMonitor.src.UI
         private void UpdateVisibleNodesSmart()
         {
             if (!this.Visible || _tree.IsDisposed) return;
-            TreeNode node = _tree.TopNode;
+            TreeNode? node = _tree.TopNode;
             while (node != null)
             {
                 if (node.Bounds.Top > _tree.ClientSize.Height) break;

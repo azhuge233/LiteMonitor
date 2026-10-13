@@ -194,10 +194,10 @@ namespace LiteMonitor
             _grid.Columns.Add(colDate);
 
             _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Up", HeaderText = "上传 (Up)", FillWeight = 80, SortMode = DataGridViewColumnSortMode.Automatic });
-            _grid.Columns["Up"].DefaultCellStyle.ForeColor = C_Up;
+            _grid.Columns["Up"]!.DefaultCellStyle.ForeColor = C_Up;
 
             _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Down", HeaderText = "下载 (Down)", FillWeight = 80, SortMode = DataGridViewColumnSortMode.Automatic });
-            _grid.Columns["Down"].DefaultCellStyle.ForeColor = C_Down;
+            _grid.Columns["Down"]!.DefaultCellStyle.ForeColor = C_Down;
 
             _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Total", HeaderText = "总计 (Total)", FillWeight = 80, SortMode = DataGridViewColumnSortMode.Automatic });
 

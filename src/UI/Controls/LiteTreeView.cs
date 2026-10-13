@@ -18,7 +18,7 @@ namespace LiteMonitor.src.UI.Controls
         private Font _boldFont;
 
         // ★★★ 新增：用于手动追踪悬停节点，解决“触角效果没生效”的问题 ★★★
-        private TreeNode _hoverNode;
+        private TreeNode? _hoverNode;
 
         // 布局参数
         public int ColValueWidth { get; set; } = 70;  
@@ -82,7 +82,7 @@ namespace LiteMonitor.src.UI.Controls
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
-            TreeNode currentNode = this.GetNodeAt(e.Location);
+            TreeNode? currentNode = this.GetNodeAt(e.Location);
             if (currentNode != _hoverNode)
             {
                 // 重绘旧的悬停节点（取消高亮）

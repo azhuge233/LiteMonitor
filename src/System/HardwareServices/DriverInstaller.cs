@@ -665,7 +665,7 @@ namespace LiteMonitor.src.SystemServices
                 using var fs = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 if (fs.Length < 64) return false;
                 var buffer = new byte[2];
-                fs.Read(buffer, 0, 2);
+                fs.ReadExactly(buffer, 0, 2); // CA2022：确保读满 2 字节（不足时抛异常，由上方 catch 归为 false）
                 return buffer[0] == 0x4D && buffer[1] == 0x5A;
             }
             catch { return false; }
