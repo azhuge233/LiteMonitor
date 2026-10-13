@@ -183,9 +183,13 @@ namespace LiteMonitor.src.SystemServices
                 lock (_lock)
                 {
                     // [Optimization] 极简维护
-                    // 仅每10分钟做一次兜底检查 (内部自动 Rebuild)，无需关心返回值。
-                    // 即使重建了，ValueProvider 会在下一次取值时懒加载或直接从 Map 取，也不需要手动 PreCache。
-                    _sensorMap.EnsureFresh(_computer, _cfg);
+                    // 仅每10分钟做一次兜底检查 (内部自动 Rebuild)。
+                    // Rebuild 后必须同步刷新取值缓存：取值只读 PreCache 生成的静态缓存，
+                    // 否则晚激活的传感器（核显的 D3D 负载/显存）即使补进映射表，取值依旧缺失。
+                    if (_sensorMap.EnsureFresh(_computer, _cfg))
+                    {
+                        _valueProvider.PreCacheAllSensors(_sensorMap);
+                    }
 
                     // 3秒一次 (慢速扫描)
                     bool isSlowScanTick = (_secondsCounter % 3 == 0); 
@@ -317,7 +321,12 @@ namespace LiteMonitor.src.SystemServices
                         WarmUpMotherboardSensors();
                         WarmUpBatterySensors();
 
-                        // 先建立映射，再由正常刷新循环更新数值，避免启动时预热所有 GPU 拖慢 CPU/MEM 展示。
+                        // [Fix] 建表前显式预热 GPU 传感器：核显的 D3D 负载/显存传感器是懒激活的
+                        // （首次 Update() 才注册），不预热会导致 GPU.Load / GPU.VRAM.* 键缺失、
+                        // 启动后一直显示 0 且无法自愈。只对将参与映射的 GPU 各更新一次（毫秒级）。
+                        SensorMap.WarmUpGpusForMapping(_computer, _cfg, force: true);
+
+                        // 先建立映射，再由正常刷新循环更新数值（CPU/MEM 首屏数据不依赖 GPU 预热）。
                         _sensorMap.Rebuild(_computer, _cfg);
                         
                         // ★★★ [新增] 静态化预热：将所有传感器对象存入 Provider 缓存 ★★★

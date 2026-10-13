@@ -41,12 +41,45 @@ namespace LiteMonitor.src.SystemServices
 
         // [Fix] 回归 v1.2.9 的简单逻辑
         // 只有在初始化时才需要 build，之后除非手动触发或 10 分钟兜底，否则不需要任何检测。
-        // EnsureFresh 的返回值改为 void，因为不需要外部感知是否重建。
-        public void EnsureFresh(Computer computer, Settings cfg) 
+        // 返回值表示本轮是否发生了 Rebuild：调用方必须据此同步刷新取值缓存（PreCacheAllSensors），
+        // 否则晚激活的传感器（如核显的 D3D 负载/显存节点）映射进表后，取值缓存里依旧没有对应键。
+        public bool EnsureFresh(Computer computer, Settings cfg) 
         {
             if ((DateTime.Now - _lastMapBuild).TotalMinutes > 10)
             {
                 Rebuild(computer, cfg);
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 建表前预热：让"懒激活"的 GPU 传感器先上线。
+        /// Intel 核显（D3D 引擎节点负载 / D3D Shared Memory）与 AMD 的负载传感器
+        /// 在硬件对象构造时只创建实例，首次 Update() 后才注册进 Sensors 集合；
+        /// 若建表早于任何 GPU 更新，GPU.Load / GPU.VRAM.* 等键会直接缺失。
+        /// 这里对"将参与映射"的显卡补一次 Update（force=false 时仅在缺少
+        /// Load/SmallData 传感器时更新，对已就绪的独显零额外调用）。
+        /// </summary>
+        public static void WarmUpGpusForMapping(Computer computer, Settings cfg, bool force = false)
+        {
+            string preferredGpu = cfg.PreferredGpu ?? "";
+            IHardware? selectedGpu = HardwareScanner.FindGpuByConfig(computer, preferredGpu);
+
+            IEnumerable<IHardware> gpusToMap = selectedGpu != null
+                ? new[] { selectedGpu }
+                : computer.Hardware.Where(HardwareScanner.IsGpuHardware);
+
+            foreach (var gpu in gpusToMap)
+            {
+                if (!force)
+                {
+                    bool hasLoad = gpu.Sensors.Any(s => s.SensorType == SensorType.Load);
+                    bool hasMemory = gpu.Sensors.Any(s => s.SensorType == SensorType.SmallData);
+                    if (hasLoad && hasMemory) continue;
+                }
+
+                try { gpu.Update(); } catch { }
             }
         }
 
@@ -102,6 +135,10 @@ namespace LiteMonitor.src.SystemServices
 
             string preferredGpu = cfg.PreferredGpu ?? "";
             IHardware? selectedGpu = HardwareScanner.FindGpuByConfig(computer, preferredGpu);
+
+            // ★★★ [Fix] 建表前预热懒激活的 GPU 传感器（Intel 核显 / AMD），
+            // 否则本次建表会缺 GPU.Load / GPU.VRAM.* 等键（详见 WarmUpGpusForMapping）。 ★★★
+            WarmUpGpusForMapping(computer, cfg);
 
             // 局部递归函数
             void RegisterTo(IHardware hw)
