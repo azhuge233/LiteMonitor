@@ -1,6 +1,6 @@
 {
-  "version": "1.3.6",
-  "changelog": "修正1.3.5版本部分问题\n1，新增监控历史，可查看温度、负载、功耗、频率、FPS 等历史趋势\n2，支持多显卡切换\n3，更新硬件核心库到最新正式版\n4，优化并修复部分已知问题",
-  "releaseDate": "2026-05-16",
-  "downloadUrl": "https://github.com/Diorser/LiteMonitor/releases"
+  "version": "1.3.7",
+  "changelog": "修复 Intel 核显平台启动后 GPU 占用率、显存显示为 0 的问题——启动即正常显示，无需再去设置里切换首选显卡",
+  "releaseDate": "2026-10-13",
+  "downloadUrl": "https://github.com/azhuge233/LiteMonitor/releases"
 }
