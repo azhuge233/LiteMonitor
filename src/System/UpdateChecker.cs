@@ -16,8 +16,7 @@ namespace LiteMonitor
 {
     /// <summary>
     /// LiteMonitor 自动更新模块（最终完整版）
-    /// - version.json 支持国内 / GitHub 两源自动 fallback
-    /// - ZIP 下载支持两源测速自动选择最快
+    /// - version.json 与 ZIP 下载源均指向本仓库 fork（azhuge233/LiteMonitor）
     /// - ZIP 下载完成后，主程序抢先更新 Updater.exe，防止自更新死锁
     /// - CheckAsync() 可被右键菜单直接调用
     /// </summary>
@@ -38,35 +37,21 @@ namespace LiteMonitor
         };
 
         // ========================================================
-        // 【1】两个 version.json 源（自动 fallback）
+        // 【1】version.json 源（本仓库 fork 的发布源）
         // ========================================================
         private static readonly string[] VersionJsonUrls =
         {
-             // 国官网源
-            "https://litemonitor.cn/update/version.json",
-            
-            // Gitee RAW（自动 fallback 使用）
-             "https://gitee.com/Diorser/LiteMonitor/raw/master/resources/version.json",
-
-            // GitHub RAW（自动 fallback 使用）
-             "https://raw.githubusercontent.com/Diorser/LiteMonitor/master/resources/version.json",
-             
+            // 本 fork：master 分支上的版本文件
+            "https://raw.githubusercontent.com/azhuge233/LiteMonitor/master/resources/version.json",
         };
 
         // ========================================================
-        // 【2】两个 ZIP 下载镜像（测速自动选择最快）
+        // 【2】ZIP 下载源（本 fork 的 Release 资产）
         // ========================================================
         private static readonly string[] Mirrors =
         {
-            
-            // Gitee Releases
-            "https://gitee.com/Diorser/LiteMonitor/releases/download/v{0}/LiteMonitor_v{0}-win-x64.zip",
-            // 国内 CDN
-            "https://litemonitor.cn/update/LiteMonitor_v{0}-win-x64.zip",
-            // Github Releases
-            "https://github.com/Diorser/LiteMonitor/releases/download/v{0}/LiteMonitor_v{0}-win-x64.zip",
-
-            
+            // 本 fork Releases
+            "https://github.com/azhuge233/LiteMonitor/releases/download/v{0}/LiteMonitor_v{0}-win-x64.zip",
         };
 
         /// <summary>
@@ -137,7 +122,7 @@ namespace LiteMonitor
                     {
                         Title = isZh ? "发现新版本！" : "New Version!",
                         VersionLabel = $"⚡️LiteMonitor_v{latest}",
-                        Description = $"更新日志：\n{changelog} \n更新日期：\n{releaseDate}\n\n官网：https://litemonitor.cn \nGitHub：https://github.com/Diorser/LiteMonitor",
+                        Description = $"更新日志：\n{changelog} \n更新日期：\n{releaseDate}\n\nGitHub：https://github.com/azhuge233/LiteMonitor",
                         Urls = sortedUrls.ToArray(),
                         SavePath = Path.Combine(AppContext.BaseDirectory, "resources", "update.zip"),
                         ActionButtonText = "Update",
