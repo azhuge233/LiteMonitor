@@ -27,6 +27,209 @@ namespace LiteMonitor.src.UI.Controls
         public static readonly int X_SORT = X_COL4;
     }
 
+    /// <summary>
+    /// 抓手（行 / 组头左边缘的 6 点）：命中区与画法集中在这里，尺寸一律经 UIUtils.S 缩放。
+    /// 命中区落在现有 ID 列（MonitorLayout.X_COL1）左侧空档，不动任何现有列坐标。
+    /// </summary>
+    public static class MonitorGrip
+    {
+        public static readonly Color GripColor = Color.FromArgb(150, 150, 150);
+
+        public static int HitLeft => UIUtils.S(ListReorder.GripX0);
+        public static int HitRight => UIUtils.S(ListReorder.GripX1);
+        public static bool Hit(Point p) => p.X >= HitLeft && p.X <= HitRight;
+
+        /// <summary>自绘 6 点（2 列 × 3 行）。禁用字体符号：避免 YaHei 缺字与 DPI 差异。</summary>
+        public static void Paint(Graphics g, int height, Color color)
+        {
+            int dot = UIUtils.S(3);
+            int gap = UIUtils.S(4);
+            int gw = dot * 2 + gap;
+            int gh = dot * 3 + gap * 2;
+            int x0 = HitLeft + (HitRight - HitLeft + 1 - gw) / 2;
+            int y0 = (height - gh) / 2;
+            if (x0 < 0) x0 = 0;
+            if (y0 < 0) y0 = 0;
+
+            using var b = new SolidBrush(color);
+            for (int col = 0; col < 2; col++)
+                for (int row = 0; row < 3; row++)
+                    g.FillEllipse(b, x0 + col * (dot + gap), y0 + row * (dot + gap), dot, dot);
+        }
+    }
+
+    /// <summary>
+    /// 行 / 组头共用的「显示顺序」支撑：右键菜单（置顶 / 上移 / 下移 / 置底 ＋ 恢复默认顺序）与拖拽接线。
+    /// 拖拽 / 菜单 / ▲▼ 三条通道最终都落到 ListReorder.MoveSlot 这一个出口，行为不可能分叉。
+    /// </summary>
+    internal sealed class ReorderSupport : IDisposable
+    {
+        private readonly Control _host;                               // 挂菜单 / 拖拽期持有鼠标的控件（行 / 组头）
+        private readonly Func<Control?> _ownerOf;                     // 可移动项：行 = 自己，组头 = 自己的组块
+        private readonly Func<Control?> _containerOf;                 // 兄弟容器：行 = Parent，组头 = 组块的 Parent
+        private readonly Func<Func<Control, bool>?> _slotFilterOf;    // 哪些兄弟算「槽位」
+        private readonly Func<int> _slotHeight;                       // >0 等高（行）；0 = 按各槽中心（组块）
+        private readonly Func<int> _minTargetIndex;                   // 槽位表内最小下标（DASH 冻结 = 1）
+        private readonly Func<bool> _positionEnabled;                 // DASH 组头 = false（位置项全禁用）
+
+        private readonly ToolStripMenuItem _itemTop;
+        private readonly ToolStripMenuItem _itemUp;
+        private readonly ToolStripMenuItem _itemDown;
+        private readonly ToolStripMenuItem _itemBottom;
+
+        private ListReorder.DragSession? _session;
+
+        public event EventHandler? RestoreDefaultOrderRequested;
+        public ContextMenuStrip Menu { get; }
+        public bool IsDragging => _session != null && _session.IsActive;
+        public bool IsArmed => _session != null && _session.IsArmed;
+
+        public ReorderSupport(Control host,
+                              Func<Control?> ownerOf,
+                              Func<Control?> containerOf,
+                              Func<Func<Control, bool>?> slotFilterOf,
+                              Func<int> slotHeight,
+                              Func<int> minTargetIndex,
+                              Func<bool> positionEnabled)
+        {
+            _host = host;
+            _ownerOf = ownerOf;
+            _containerOf = containerOf;
+            _slotFilterOf = slotFilterOf;
+            _slotHeight = slotHeight;
+            _minTargetIndex = minTargetIndex;
+            _positionEnabled = positionEnabled;
+
+            Menu = new ContextMenuStrip();
+            _itemTop = new ToolStripMenuItem(L("置顶", "Move to Top"), null, (s, e) => MoveTop());
+            _itemUp = new ToolStripMenuItem(L("上移", "Move Up"), null, (s, e) => MoveBy(-1));
+            _itemDown = new ToolStripMenuItem(L("下移", "Move Down"), null, (s, e) => MoveBy(1));
+            _itemBottom = new ToolStripMenuItem(L("置底", "Move to Bottom"), null, (s, e) => MoveBottom());
+            var itemRestore = new ToolStripMenuItem(L("恢复默认顺序", "Restore Default Order"), null,
+                                                    (s, e) => RestoreDefaultOrderRequested?.Invoke(this, EventArgs.Empty));
+
+            Menu.Items.AddRange(new ToolStripItem[]
+            {
+                _itemTop, _itemUp, _itemDown, _itemBottom,
+                new ToolStripSeparator(),
+                itemRestore,
+            });
+            Menu.Opening += (s, e) => RefreshEnabled();
+
+            // 宿主被释放（列表刷新 / 窗口关闭）：会话立即收尾，定时器不停留在后台
+            _host.Disposed += (s, e) => _session?.Abort();
+        }
+
+        /// <summary>把菜单挂到该控件及其所有子控件（右键落在行内标签 / 空白区也能弹出）。</summary>
+        public void AttachMenu(Control root)
+        {
+            // 输入框自带剪切 / 复制 / 粘贴菜单：挂上本菜单会把它顶掉 → 跳过输入框本身，其余子控件照挂
+            if (root is TextBoxBase) return;
+            root.ContextMenuStrip = Menu;
+            foreach (Control c in root.Controls) AttachMenu(c);
+        }
+
+        /// <summary>释放菜单：ContextMenuStrip 不随宿主控件自动释放 → 每次 ReloadList 每行都会漏一个。</summary>
+        public void Dispose()
+        {
+            Menu.Dispose();
+        }
+
+        // ===== 鼠标（左键落在抓手区才起拖；拖拽期由 Capture 吞事件，不改输入框 Enabled）=====
+        public void MouseDown(Point location, MouseButtons button)
+        {
+            if (button != MouseButtons.Left) return;
+            if (!_positionEnabled() || !MonitorGrip.Hit(location)) return;
+
+            var container = _containerOf();
+            var owner = _ownerOf();
+            if (container == null || owner == null || _host.IsDisposed) return;
+
+            // source = 可移动项（组层是组块）；captureTarget = 持有鼠标的控件（组层是组头）
+            _session = new ListReorder.DragSession(owner, _host, container, _slotFilterOf(),
+                                                  _slotHeight(), _minTargetIndex(),
+                                                  UIUtils.S(12), UIUtils.S(28), UIColors.Primary);
+            _session.OnMouseDown(Cursor.Position);
+        }
+
+        public void MouseMove()
+        {
+            if (_session != null && _session.IsBusy) _session.OnMouseMove();
+        }
+
+        public void MouseUp(MouseButtons button)
+        {
+            if (button != MouseButtons.Left) return;
+            _session?.OnMouseUp();
+        }
+
+        public void CaptureLost()
+        {
+            if (_session != null && _session.IsActive && !_host.Capture) _session.Abort();
+        }
+
+        /// <summary>鼠标移出宿主：只清理「已按下、未起拖」的会话——此时无 Capture，
+        /// MouseUp 送不回来，留着会让鼠标再移入时凭空起拖。</summary>
+        public void MouseLeave()
+        {
+            if (_session != null && _session.IsArmed && !_session.IsActive) _session.Abort();
+        }
+
+        // ===== 右键菜单 =====
+        private List<Control> Slots()
+        {
+            var container = _containerOf();
+            if (container == null) return new List<Control>();
+            var filter = _slotFilterOf();
+            return ListReorder.VisualChildren(container).Where(c => filter == null || filter(c)).ToList();
+        }
+
+        private void MoveTop() { var slots = Slots(); MoveToSlot(slots, Math.Max(0, _minTargetIndex())); }
+        private void MoveBottom() { var slots = Slots(); MoveToSlot(slots, slots.Count - 1); }
+        private void MoveBy(int delta)
+        {
+            var owner = _ownerOf();
+            if (owner == null) return;
+            var slots = Slots();
+            MoveToSlot(slots, slots.IndexOf(owner) + delta);
+        }
+
+        private void MoveToSlot(List<Control> slots, int slotIndex)
+        {
+            var container = _containerOf();
+            var owner = _ownerOf();
+            if (container == null || owner == null || slots.Count == 0) return;
+
+            int min = Math.Max(0, _minTargetIndex());
+            if (slotIndex < min) slotIndex = min;
+            if (slotIndex > slots.Count - 1) slotIndex = slots.Count - 1;
+            if (slotIndex < 0 || slotIndex >= slots.Count) return;
+
+            // 唯一的 z 序落地
+            ListReorder.MoveSlot(container, owner, ListReorder.GetLogicalIndex(container, slots[slotIndex]));
+        }
+
+        /// <summary>首项禁用「置顶 / 上移」、末项禁用「下移 / 置底」；DASH 组头位置项全禁用。</summary>
+        private void RefreshEnabled()
+        {
+            var owner = _ownerOf();
+            var slots = owner == null ? new List<Control>() : Slots();
+            int idx = owner == null ? -1 : slots.IndexOf(owner);
+            bool on = _positionEnabled();
+            bool canUp = on && idx > Math.Max(0, _minTargetIndex());
+            bool canDown = on && idx >= 0 && idx < slots.Count - 1;
+
+            _itemTop.Enabled = canUp;
+            _itemUp.Enabled = canUp;
+            _itemDown.Enabled = canDown;
+            _itemBottom.Enabled = canDown;
+        }
+
+        /// <summary>菜单文案：与 HardwareInfoForm 同一约定（无语言键的局部文案走中英双写）。</summary>
+        private static string L(string zh, string en)
+            => LanguageManager.CurrentLang == "zh" ? zh : en;
+    }
+
     public class MonitorItemRow : Panel
     {
         public MonitorItemConfig Config { get; private set; }
@@ -50,6 +253,24 @@ namespace LiteMonitor.src.UI.Controls
 
         public event EventHandler MoveUp;
         public event EventHandler MoveDown;
+
+        /// <summary>右键菜单「恢复默认顺序」（由 MonitorPage 接住：只作用于当前页签）。</summary>
+        public event EventHandler? RestoreDefaultOrderRequested;
+
+        /// <summary>本行可落到的最小槽位下标（行恒为 0；组层用 1 实现 DASH 位次冻结）。</summary>
+        public int MinTargetIndex { get; set; } = 0;
+
+        /// <summary>▲/▼ 是否可见（DASH 组隐藏：位次冻结时留着按钮＝点了没反应）。
+        /// 记的是「请求状态」——Control.Visible 读的是含父链的有效可见性，窗口未显示时一律为 false。</summary>
+        public bool SortButtonsVisible
+        {
+            get => _sortButtonsVisible;
+            set { _sortButtonsVisible = value; _btnUp.Visible = value; _btnDown.Visible = value; }
+        }
+        private bool _sortButtonsVisible = true;
+
+        // 抓手 + 右键菜单 + 拖拽接线
+        private readonly ReorderSupport _reorder;
 
         // ★★★ 修改构造函数：增加 isTaskbarMode 参数 ★★★
         public MonitorItemRow(MonitorItemConfig item, bool isTaskbarMode)
@@ -151,6 +372,17 @@ namespace LiteMonitor.src.UI.Controls
 
             // ★★★ 立即应用模式可见性 ★★★
             ApplyModeVisibility();
+
+            // 抓手 + 右键菜单 + 拖拽：行的兄弟槽位 = 同一容器内的其他行（主界面页限本组 RowsPanel）
+            _reorder = new ReorderSupport(this,
+                                          () => this,
+                                          () => Parent,
+                                          () => (Func<Control, bool>)(c => c is MonitorItemRow),
+                                          () => MonitorLayout.H_ROW,
+                                          () => MinTargetIndex,
+                                          () => true);
+            _reorder.RestoreDefaultOrderRequested += (s, e) => RestoreDefaultOrderRequested?.Invoke(this, EventArgs.Empty);
+            _reorder.AttachMenu(this);
         }
 
         // 提取出来的可见性设置方法
@@ -203,6 +435,64 @@ namespace LiteMonitor.src.UI.Controls
             base.OnPaint(e);
             using (var p = new Pen(UIColors.Border))
                 e.Graphics.DrawLine(p, MonitorLayout.X_COL1, Height - 1, Width - UIUtils.S(20), Height - 1);
+
+            MonitorGrip.Paint(e.Graphics, Height, MonitorGrip.GripColor);   // 抓手（6 点自绘）
+
+            // 拖拽期反馈：源行左缘高亮；目标槽位画插入线（线随内容滚动，所以由槽位自己画）
+            var drag = ListReorder.Active;
+            if (drag == null) return;
+
+            if (drag.IsSource(this))
+            {
+                using var b = new SolidBrush(UIColors.Primary);
+                e.Graphics.FillRectangle(b, 0, 0, UIUtils.S(3), Height);
+            }
+            else if (drag.ShouldPaintLineFor(this))
+            {
+                ListReorder.PaintInsertionLine(e.Graphics, ClientRectangle, drag.LineColor,
+                                               UIUtils.S(ListReorder.LineThickness));
+            }
+        }
+
+        // ===== 拖拽接线：只有左键落在抓手区（命中区在 ID 列左侧空档）才起拖 =====
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            _reorder.MouseDown(e.Location, e.Button);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            _reorder.MouseMove();
+            if (!_reorder.IsDragging && !_reorder.IsArmed)
+                Cursor = MonitorGrip.Hit(e.Location) ? Cursors.SizeAll : Cursors.Default;
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            _reorder.MouseUp(e.Button);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            _reorder.MouseLeave();   // 按下后移出：清掉未起拖的会话（无 Capture，MouseUp 送不回来）
+            if (!_reorder.IsDragging) Cursor = Cursors.Default;
+        }
+
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            base.OnMouseCaptureChanged(e);
+            _reorder.CaptureLost();
+        }
+
+        /// <summary>行被释放（ReloadList 逐行 Dispose）：连右键菜单一起释放，避免菜单泄漏。</summary>
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _reorder?.Dispose();
+            base.Dispose(disposing);
         }
 
         public void SyncToConfig()
@@ -340,9 +630,34 @@ namespace LiteMonitor.src.UI.Controls
         public string GroupKey { get; private set; }
         public LiteUnderlineInput InputAlias { get; private set; }
         private LiteCheck _chkAll; // [需求2] 增加组开关
+        private LiteSortBtn _btnUp;
+        private LiteSortBtn _btnDown;
         public event EventHandler MoveUp;
         public event EventHandler MoveDown;
         public event EventHandler<bool> ToggleGroup; // [需求2] 组开关事件
+
+        /// <summary>右键菜单「恢复默认顺序」（由 MonitorPage 接住：只作用于当前页签）。</summary>
+        public event EventHandler? RestoreDefaultOrderRequested;
+
+        /// <summary>是否可参与重排（DASH 组 = false：无抓手、▲/▼ 隐藏、位置项禁用）。</summary>
+        public bool ReorderEnabled { get; set; } = true;
+
+        /// <summary>可落到的最小槽位下标（组层：DASH 存在时为 1，保证任何组不排到 DASH 之前）。</summary>
+        public int MinTargetIndex { get; set; } = 0;
+
+        /// <summary>兄弟槽位判定（组块类型由 MonitorPage 注入；不注入 = 所有兄弟）。</summary>
+        public Func<Control, bool>? SlotFilter { get; set; }
+
+        /// <summary>▲/▼ 是否可见（DASH 组隐藏）。记的是「请求状态」，理由同行。</summary>
+        public bool SortButtonsVisible
+        {
+            get => _sortButtonsVisible;
+            set { _sortButtonsVisible = value; _btnUp.Visible = value; _btnDown.Visible = value; }
+        }
+        private bool _sortButtonsVisible = true;
+
+        // 抓手 + 右键菜单 + 拖拽接线
+        private readonly ReorderSupport _reorder;
 
         public MonitorGroupHeader(string groupKey, string alias)
         {
@@ -376,13 +691,25 @@ namespace LiteMonitor.src.UI.Controls
             // 点击事件：触发 ToggleGroup
             _chkAll.Click += (s, e) => ToggleGroup?.Invoke(this, _chkAll.Checked);
 
-            var btnUp = new LiteSortBtn("▲") { Location = new Point(MonitorLayout.X_COL4, UIUtils.S(10)) };
-            var btnDown = new LiteSortBtn("▼") { Location = new Point(MonitorLayout.X_COL4 + UIUtils.S(36), UIUtils.S(10)) };
-            
-            btnUp.Click += (s, e) => MoveUp?.Invoke(this, EventArgs.Empty);
-            btnDown.Click += (s, e) => MoveDown?.Invoke(this, EventArgs.Empty);
+            // ▲/▼ 提升为字段：DASH 组需整组隐藏
+            _btnUp = new LiteSortBtn("▲") { Location = new Point(MonitorLayout.X_COL4, UIUtils.S(10)) };
+            _btnDown = new LiteSortBtn("▼") { Location = new Point(MonitorLayout.X_COL4 + UIUtils.S(36), UIUtils.S(10)) };
 
-            this.Controls.AddRange(new Control[] { lblId, InputAlias, _chkAll, btnUp, btnDown });
+            _btnUp.Click += (s, e) => MoveUp?.Invoke(this, EventArgs.Empty);
+            _btnDown.Click += (s, e) => MoveDown?.Invoke(this, EventArgs.Empty);
+
+            this.Controls.AddRange(new Control[] { lblId, InputAlias, _chkAll, _btnUp, _btnDown });
+
+            // 抓手 + 右键菜单 + 拖拽：可移动项 = Tag 里的组块；兄弟容器 = 组块所在的 _container
+            _reorder = new ReorderSupport(this,
+                                          () => Tag as Control,
+                                          () => (Tag as Control)?.Parent,
+                                          () => SlotFilter,
+                                          () => 0,                       // 组块高矮不一 → 按各槽中心计算
+                                          () => MinTargetIndex,
+                                          () => ReorderEnabled);
+            _reorder.RestoreDefaultOrderRequested += (s, e) => RestoreDefaultOrderRequested?.Invoke(this, EventArgs.Empty);
+            _reorder.AttachMenu(this);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -390,6 +717,72 @@ namespace LiteMonitor.src.UI.Controls
             base.OnPaint(e);
             using(var p = new Pen(UIColors.Border)) 
                 e.Graphics.DrawLine(p, 0, Height-1, Width, Height-1);
+
+            if (!ReorderEnabled) return;   // DASH：位次冻结 → 无抓手
+
+            MonitorGrip.Paint(e.Graphics, Height, MonitorGrip.GripColor);
+
+            var drag = ListReorder.Active;
+            if (drag == null) return;
+
+            // 组层：槽位 = 组块；组块其余部分被卡片遮住，只有组头是可见表头 → 由组头代为绘制
+            var block = Tag as Control;
+            if (block == null) return;
+
+            if (drag.IsSource(block))
+            {
+                using var b = new SolidBrush(UIColors.Primary);
+                e.Graphics.FillRectangle(b, 0, 0, UIUtils.S(3), Height);
+            }
+            else if (drag.ShouldPaintLineFor(block))
+            {
+                ListReorder.PaintInsertionLine(e.Graphics, ClientRectangle, drag.LineColor,
+                                               UIUtils.S(ListReorder.LineThickness));
+            }
+        }
+
+        // ===== 拖拽接线（DASH 组头不进这里：ReorderEnabled = false）=====
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (!ReorderEnabled) return;
+            _reorder.MouseDown(e.Location, e.Button);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!ReorderEnabled) return;
+            _reorder.MouseMove();
+            if (!_reorder.IsDragging && !_reorder.IsArmed)
+                Cursor = MonitorGrip.Hit(e.Location) ? Cursors.SizeAll : Cursors.Default;
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (!ReorderEnabled) return;
+            _reorder.MouseUp(e.Button);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            _reorder.MouseLeave();   // 按下后移出：清掉未起拖的会话（无 Capture，MouseUp 送不回来）
+            if (!_reorder.IsDragging) Cursor = Cursors.Default;
+        }
+
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            base.OnMouseCaptureChanged(e);
+            _reorder.CaptureLost();
+        }
+
+        /// <summary>组头被释放（ReloadList 逐块 Dispose）：连右键菜单一起释放，避免菜单泄漏。</summary>
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _reorder?.Dispose();
+            base.Dispose(disposing);
         }
     }
 }

@@ -17,6 +17,7 @@
 - Runtime base upgraded to .NET 10 (LTS, supported until Nov 2028).
 - About dialog: copyright year now follows the current year; the original author, repository and website are clearly labeled, plus this fork's attribution.
 - Feedback links and the update check point to this fork (they no longer send users back upstream).
+- Monitor item display order supports drag-and-drop (drag the grip at the left edge of a row or a group header; the context menu offers move to top / up / down / bottom and "restore default order").
 
 ## 🛠️ Build Instructions
 

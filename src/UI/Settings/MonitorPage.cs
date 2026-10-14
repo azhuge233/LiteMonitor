@@ -260,11 +260,13 @@ namespace LiteMonitor.src.UI.SettingsPage
                     if (control is GroupBlock block)
                     {
                         block.Header.MoveUp -= GroupHeader_MoveUp; block.Header.MoveDown -= GroupHeader_MoveDown;
-                        foreach (var row in block.RowsPanel.Controls.OfType<MonitorItemRow>()) { row.MoveUp -= Row_MoveUp; row.MoveDown -= Row_MoveDown; }
+                        block.Header.RestoreDefaultOrderRequested -= Reorder_RestoreDefaultOrder;
+                        foreach (var row in block.RowsPanel.Controls.OfType<MonitorItemRow>()) { row.MoveUp -= Row_MoveUp; row.MoveDown -= Row_MoveDown; row.RestoreDefaultOrderRequested -= Reorder_RestoreDefaultOrder; }
                     }
                     else if (control is MonitorItemRow row)
                     {
                         row.MoveUp -= Row_MoveUp; row.MoveDown -= Row_MoveDown;
+                        row.RestoreDefaultOrderRequested -= Reorder_RestoreDefaultOrder;
                     }
                     _container.Controls.RemoveAt(i);
                     control.Dispose();
@@ -291,6 +293,7 @@ namespace LiteMonitor.src.UI.SettingsPage
                     {
                         var row = new MonitorItemRow(items[i], true);
                         row.MoveUp += Row_MoveUp; row.MoveDown += Row_MoveDown;
+                        row.RestoreDefaultOrderRequested += Reorder_RestoreDefaultOrder;
                         controlsToAdd.Add(row);
                     }
                 }
@@ -298,15 +301,30 @@ namespace LiteMonitor.src.UI.SettingsPage
                 {
                     var items = _workingList.OrderBy(x => x.SortIndex).ToList();
                     var groups = items.GroupBy(x => x.UIGroup);
-                    
+
+                    // DASH 组位次冻结：任何组不得排到它之前 → 其余组的最小插入位 = 1
+                    bool dashPresent = items.Any(x => string.Equals(x.UIGroup, "DASH", StringComparison.OrdinalIgnoreCase));
+
                     foreach (var g in groups.Reverse())
                     {
-                        var block = CreateGroupBlock(g.Key, g.ToList());
+                        var block = CreateGroupBlock(g.Key, g.ToList(), dashPresent);
                         controlsToAdd.Add(block);
                     }
                 }
                 
                 _container.Controls.AddRange(controlsToAdd.ToArray());
+
+                // DASH 归一化（A19）：既有配置里 DASH 可能不在最前（旧版允许分组自由移动），
+                // 而「其余组下限 = 1」是常数——只在 DASH 恰居首个组块槽位时成立 → 装配后把 DASH 归位。
+                // 纯界面行为：只动 z 序，仍要点「保存」才落盘。
+                if (!_isTaskbarTab)
+                {
+                    var blocksInOrder = ListReorder.VisualChildren(_container).OfType<GroupBlock>().ToList();
+                    var dashBlock = blocksInOrder.FirstOrDefault(
+                        b => string.Equals(b.Header.GroupKey, "DASH", StringComparison.OrdinalIgnoreCase));
+                    if (dashBlock != null && blocksInOrder.Count > 1 && !ReferenceEquals(blocksInOrder[0], dashBlock))
+                        ListReorder.MoveSlot(_container, dashBlock, ListReorder.GetLogicalIndex(_container, blocksInOrder[0]));
+                }
 
             // 底部提示文案
             var bottomLabel = new Label 
@@ -388,15 +406,25 @@ namespace LiteMonitor.src.UI.SettingsPage
             _lblCol4.Location = new Point(MonitorLayout.X_COL4 + offset, y);
         }
 
-        private GroupBlock CreateGroupBlock(string groupKey, List<MonitorItemConfig> items)
+        private GroupBlock CreateGroupBlock(string groupKey, List<MonitorItemConfig> items, bool dashPresent)
         {
             string alias = Config.GroupAliases.ContainsKey(groupKey) ? Config.GroupAliases[groupKey] : "";
-            var header = new MonitorGroupHeader(groupKey, alias);
+            bool isDash = string.Equals(groupKey, "DASH", StringComparison.OrdinalIgnoreCase);
+
+            var header = new MonitorGroupHeader(groupKey, alias)
+            {
+                // DASH 组位次冻结：无抓手、▲/▼ 隐藏、位置项禁用；其余组不得排到它之前（下限 = 1）
+                ReorderEnabled = !isDash,
+                MinTargetIndex = isDash ? 0 : (dashPresent ? 1 : 0),
+                SlotFilter = c => c is GroupBlock,
+                SortButtonsVisible = !isDash,
+            };
             var rowsPanel = new Panel { Dock = DockStyle.Top, AutoSize = true, BackColor = Color.White };
             var block = new GroupBlock(header, rowsPanel);
 
             header.MoveUp += GroupHeader_MoveUp;
             header.MoveDown += GroupHeader_MoveDown;
+            header.RestoreDefaultOrderRequested += Reorder_RestoreDefaultOrder;
             header.ToggleGroup += (s, checkState) => 
             {
                 foreach(MonitorItemRow row in rowsPanel.Controls) row.SetPanelChecked(checkState);
@@ -408,6 +436,7 @@ namespace LiteMonitor.src.UI.SettingsPage
             {
                 var row = new MonitorItemRow(items[i], false);
                 row.MoveUp += Row_MoveUp; row.MoveDown += Row_MoveDown;
+                row.RestoreDefaultOrderRequested += Reorder_RestoreDefaultOrder;
                 rows.Add(row);
             }
             rowsPanel.Controls.AddRange(rows.ToArray());
@@ -422,19 +451,89 @@ namespace LiteMonitor.src.UI.SettingsPage
         
         private void MoveControl(Control c, int dir)
         {
-            var p = c.Parent as ScrollableControl; if (p == null) return;
-            
-            // [Fix] 防止 WinForms 自动滚动跳动
-            p.SuspendLayout();
-            var scroll = p.AutoScrollPosition;
-            
-            int idx = p.Controls.GetChildIndex(c); 
-            int newIdx = idx - dir; 
-            if (newIdx >= 0 && newIdx < p.Controls.Count) p.Controls.SetChildIndex(c, newIdx);
+            // ▲/▼ 单步通道：与拖拽 / 右键菜单一样，最终只走 ListReorder.MoveSlot 这一个出口
+            var p = c.Parent;
+            if (p == null) return;
 
-            p.AutoScrollPosition = new Point(Math.Abs(scroll.X), Math.Abs(scroll.Y));
-            p.ResumeLayout(false);
-            p.PerformLayout();
+            var slots = ReorderSlots(p, c);
+            int idx = slots.IndexOf(c);
+            if (idx < 0) return;
+
+            int min = MinTargetIndexOf(c);
+            int target = idx + dir;
+            if (target < min) target = min;
+            if (target > slots.Count - 1) target = slots.Count - 1;
+            if (target == idx) return;
+
+            ListReorder.MoveSlot(p, c, ListReorder.GetLogicalIndex(p, slots[target]));
+        }
+
+        /// <summary>同层级可重排兄弟（视觉序）：行 → 行；组块 → 组块（占位符 / 底部提示不参与）。</summary>
+        private static List<Control> ReorderSlots(Control container, Control moving)
+            => ListReorder.VisualChildren(container)
+                         .Where(x => moving is GroupBlock ? x is GroupBlock : x is MonitorItemRow)
+                         .ToList();
+
+        /// <summary>该控件可落到的最小逻辑位次（组层：DASH 存在时为 1）。</summary>
+        private static int MinTargetIndexOf(Control c)
+        {
+            if (c is GroupBlock block) return Math.Max(0, block.Header.MinTargetIndex);
+            if (c is MonitorItemRow row) return Math.Max(0, row.MinTargetIndex);
+            return 0;
+        }
+
+        private void Reorder_RestoreDefaultOrder(object? sender, EventArgs e) => RestoreDefaultOrder();
+
+        /// <summary>
+        /// 恢复当前页签的出厂默认顺序（用户裁定）：只作用于当前页签、只恢复顺序。
+        /// 可见性 / 别名 / 单位 / 标签一律不动；控件树即状态，仍需用户点「保存」才落盘（「取消」可放弃）。
+        /// </summary>
+        private void RestoreDefaultOrder()
+        {
+            if (_workingList == null || _container == null) return;
+
+            try
+            {
+                // 默认名次表：临时 new Settings() + InitDefaultItems()（与 RebuildAndMigrateSettings 同源做法）。
+                // 严禁对实盘配置调用 InitDefaultItems —— 它是整体替换语义。
+                var defaults = new Settings();
+                defaults.InitDefaultItems();
+
+                var bySort = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var byTaskbar = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var groupRank = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var d in defaults.MonitorItems)
+                {
+                    bySort[d.Key] = d.SortIndex;
+                    byTaskbar[d.Key] = d.TaskbarSortIndex;
+                    if (!groupRank.TryGetValue(d.UIGroup, out int g) || d.SortIndex < g) groupRank[d.UIGroup] = d.SortIndex;
+                }
+
+                if (_isTaskbarTab)
+                {
+                    var rows = ListReorder.VisualChildren(_container).OfType<MonitorItemRow>().ToList();
+                    var ordered = ListReorder.ApplyDefaultOrder(rows, r => r.Config.Key, byTaskbar);
+                    ListReorder.ApplyVisualOrder(_container, ordered);
+                }
+                else
+                {
+                    // 组内行先归位，再归位组块位次
+                    foreach (var block in ListReorder.VisualChildren(_container).OfType<GroupBlock>())
+                    {
+                        var rows = ListReorder.VisualChildren(block.RowsPanel).OfType<MonitorItemRow>().ToList();
+                        var ordered = ListReorder.ApplyDefaultOrder(rows, r => r.Config.Key, bySort);
+                        ListReorder.ApplyVisualOrder(block.RowsPanel, ordered);
+                    }
+
+                    var blocks = ListReorder.VisualChildren(_container).OfType<GroupBlock>().ToList();
+                    var orderedBlocks = ListReorder.ApplyDefaultOrder(blocks, b => b.Header.GroupKey, groupRank);
+                    ListReorder.ApplyVisualOrder(_container, orderedBlocks);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[MonitorPage] RestoreDefaultOrder failed: {ex.Message}");
+            }
         }
 
         private void SaveToWorkingList(bool? isFilteredOverride = null)
