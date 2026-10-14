@@ -1,6 +1,6 @@
 {
-  "version": "1.4.1",
-  "changelog": "关于界面改版：版权年份随系统时间自动更新，署名明确区分原作者/原仓库/原官网与本 fork；反馈入口、更新日志与「检查更新」统一指向本 fork。README 重写并注明 AI 辅助开发。",
+  "version": "1.5.0",
+  "changelog": "监控项「显示顺序」支持拖拽排序：抓住行或分组标题左缘的抓手即可上下拖动（分组可整体换位，DASH 分组固定置顶）；右键菜单提供置顶/上移/下移/置底与「恢复默认顺序」。",
   "releaseDate": "2026-10-14",
   "downloadUrl": "https://github.com/azhuge233/LiteMonitor/releases"
 }
