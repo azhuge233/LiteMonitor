@@ -59,7 +59,8 @@ namespace LiteMonitor.src.SystemServices
         /// 在硬件对象构造时只创建实例，首次 Update() 后才注册进 Sensors 集合；
         /// 若建表早于任何 GPU 更新，GPU.Load / GPU.VRAM.* 等键会直接缺失。
         /// 这里对"将参与映射"的显卡补一次 Update（force=false 时仅在缺少
-        /// Load/SmallData 传感器时更新，对已就绪的独显零额外调用）。
+        /// Load/Data 传感器时更新，对已就绪的独显零额外调用）。
+        /// 注：0.9.7 起上游将 SmallData 并入 Data（内存类传感器统一为 Data、单位=字节）。
         /// </summary>
         public static void WarmUpGpusForMapping(Computer computer, Settings cfg, bool force = false)
         {
@@ -75,7 +76,7 @@ namespace LiteMonitor.src.SystemServices
                 if (!force)
                 {
                     bool hasLoad = gpu.Sensors.Any(s => s.SensorType == SensorType.Load);
-                    bool hasMemory = gpu.Sensors.Any(s => s.SensorType == SensorType.SmallData);
+                    bool hasMemory = gpu.Sensors.Any(s => s.SensorType == SensorType.Data);
                     if (hasLoad && hasMemory) continue;
                 }
 

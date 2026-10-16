@@ -313,7 +313,6 @@ namespace LiteMonitor.src.UI
                 case SensorType.Control: return T("🎛️ [Control]", "🎛️ [控制]");
                 case SensorType.Voltage: return T("🔋 [Voltage]", "🔋 [电压]");
                 case SensorType.Data: return T("📈 [Data]", "📈 [数据]");
-                case SensorType.SmallData: return T("📶 [SmallData]", "📶 [小型数据]");
                 case SensorType.Throughput: return T("🚀 [Throughput]", "🚀 [吞吐量]");
                 // ★★★ 新增以下三项 ★★★
                 case SensorType.Level: return T("📉 [Level]", "📉 [剩余/寿命]"); // 用于 SSD 寿命或油箱液位

@@ -197,6 +197,10 @@ namespace LiteMonitor.src.SystemServices
                 if (gpuChanged)
                 {
                     _sensorMap.Rebuild(_computer, _cfg);
+
+                    // 首选显卡变了 → 显存总容量闩锁作废，交下一轮采样按新卡重新写入。
+                    // 闩锁是“先到先占”（<=0 才写），不清则容量模式会一直用旧卡的容量，需重启才恢复。
+                    Settings.DetectedGpuVramTotalGB = 0;
                 }
 
                 // 自动检测配置变更：如果用户更改了首选风扇/磁盘/显卡，立即自动预热
@@ -369,10 +373,12 @@ namespace LiteMonitor.src.SystemServices
                                     // 初始化总容量 (供容量显示模式使用)
                                     if (Settings.DetectedRamTotalGB <= 0)
                                     {
-                                        Settings.DetectedRamTotalGB = memTotal > 512.0f ? memTotal / 1024.0f : memTotal;
+                                        // LHM 0.9.7 起 Data 类传感器一律以字节为单位（本仓依赖已固定在该线），
+                                        // 直接换算 GB；不再按量级猜单位（猜错即放大百万倍，曾表现为 PB 显示）。
+                                        Settings.DetectedRamTotalGB = DataUnits.BytesToGB(memTotal);
                                     }
 
-                                    // 计算负载百分比
+                                    // 计算负载百分比（两值同单位，比例不受单位影响）
                                     result = (usedVal.Value / memTotal) * 100.0f;
                                 }
                             }
@@ -395,8 +401,10 @@ namespace LiteMonitor.src.SystemServices
                         float? total = GetValue("GPU.VRAM.Total");
                         if (used.HasValue && total.HasValue && total > 0)
                         {
-                            if (Settings.DetectedGpuVramTotalGB <= 0) Settings.DetectedGpuVramTotalGB = total.Value / 1024f;
-                            if (total > 10485760) { used /= 1048576f; total /= 1048576f; }
+                            // LHM 0.9.7 起 Data 类传感器一律以字节为单位（本仓依赖已固定在该线），总容量直接
+                            // 换算 GB；不再按量级猜单位（猜错即放大百万倍，曾表现为 500+ TB）。
+                            // 比例运算两值同单位，不受单位影响。
+                            if (Settings.DetectedGpuVramTotalGB <= 0) Settings.DetectedGpuVramTotalGB = DataUnits.BytesToGB(total.Value);
                             result = used / total * 100f;
                         }
                         else

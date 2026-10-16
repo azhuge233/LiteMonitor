@@ -23,7 +23,11 @@
 
 
 	<ItemGroup>
-    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" /><!-- System.Text.Json 由 .NET 10 框架自带（NU1510），不再显式引用 -->
+    <!-- 依赖固定为 0.9.7-pre750（预发布）：含上游 PR #2539 的 NVML 陈旧句柄修复——
+         修复前，NVIDIA 显卡被移除/重启（更新驱动、禁用/启用设备等）时会在 nvml.dll 内触发原生
+         访问违例（0xc0000005）并杀死进程，托管层与 try/catch 均无法拦截。待 0.9.7 正式版发布后改回稳定版。
+         注：版本号不可变、不会自动升级；上游其它改动多为自带图形界面，不进本项目的发布包。 -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre750" /><!-- System.Text.Json 由 .NET 10 框架自带（NU1510），不再显式引用 -->
   </ItemGroup>
 
     <!-- 自动复制 themes 与 lang 目录下的所有文件 -->

@@ -258,9 +258,8 @@ namespace LiteMonitor.src.UI.Controls
             if (!val.HasValue) return "-";
             float v = val.Value;
 
-            // 1. 数据类特殊处理 (LHM 单位转 Bytes)
-            if (type == SensorType.Data) return MetricUtils.FormatDataSize((double)v * 1073741824.0);
-            if (type == SensorType.SmallData) return MetricUtils.FormatDataSize((double)v * 1048576.0);
+            // 1. Data 类：0.9.7 起上游直接以字节为单位（此前为 GB、SmallData 为 MB），无需再换算
+            if (type == SensorType.Data) return MetricUtils.FormatDataSize((double)v);
 
             if (type == SensorType.Throughput) 
             {

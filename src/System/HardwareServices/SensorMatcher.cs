@@ -78,7 +78,8 @@ namespace LiteMonitor.src.SystemServices
                 // 1. 根据硬件规则判断是否应该优先找共享内存 (核显)
                 bool preferShared = HardwareRules.ShouldUseSharedMemory(hw);
 
-                if (s.SensorType == SensorType.SmallData && (Has(name, "memory") || Has(name, "dedicated") || Has(name, "shared")))
+                // 0.9.7 起上游移除 SmallData：内存类传感器统一为 Data（单位=字节）
+                if (s.SensorType == SensorType.Data && (Has(name, "memory") || Has(name, "dedicated") || Has(name, "shared")))
                 {
                     bool isShared = Has(name, "shared");
                     bool isDedicated = Has(name, "dedicated");
@@ -124,8 +125,8 @@ namespace LiteMonitor.src.SystemServices
                      if (name.Equals("Load", StringComparison.OrdinalIgnoreCase)) return "MEM.Load";
                 }
                 
-                // 2. ★ 增强版匹配：同时接受 Data 和 SmallData
-                if (s.SensorType == SensorType.Data || s.SensorType == SensorType.SmallData)
+                // 2. 内存/可用量传感器（0.9.7 起上游已把 SmallData 并入 Data）
+                if (s.SensorType == SensorType.Data)
                 {
                     if (Has(name, "used")) return "MEM.Used";
                     // [Fix] 恢复对 Free 的支持，防止部分系统 Available 传感器缺失或命名为 Free
