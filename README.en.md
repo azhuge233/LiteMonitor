@@ -18,6 +18,8 @@
 - About dialog: copyright year now follows the current year; the original author, repository and website are clearly labeled, plus this fork's attribution.
 - Feedback links and the update check point to this fork (they no longer send users back upstream).
 - Monitor item display order supports drag-and-drop (drag the grip at the left edge of a row or a group header; the context menu offers move to top / up / down / bottom and "restore default order").
+- Fixed crashes when updating or switching a GPU driver, or disabling a display adapter (the underlying hardware library was upgraded to remove stale driver-handle access violations).
+- GPU readings no longer freeze on the last value after a display adapter is disabled (they show `—`) and recover automatically once the device is back — no manual settings change needed; when a GPU is unavailable, the app falls back to one that is still present.
 
 ## 🛠️ Build Instructions
 

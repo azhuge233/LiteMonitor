@@ -7,6 +7,8 @@ using LibreHardwareMonitor.Hardware;
 using LiteMonitor.src.Core;
 using System.Linq;
 using System.Threading;
+using System.Collections.Concurrent;
+using System.Windows.Forms;
 
 namespace LiteMonitor.src.SystemServices
 {
@@ -33,11 +35,27 @@ namespace LiteMonitor.src.SystemServices
         // 性能计数器管理器
         private readonly PerformanceCounterManager _perfCounterManager;
 
-        private readonly Dictionary<string, float> _lastValidMap = new();
+        private readonly ConcurrentDictionary<string, float> _lastValidMap = new();
         
         // 状态标记 (防止并发重载)
         private volatile bool _isReloading = false;
         private volatile bool _isOpening = false;
+
+        // 设备变更信号：只登记“显示适配器类”设备（显卡被禁用/启用/驱动更新时收到到来/移除通知）
+        // 用 int + Interlocked（0/1）：置位在消息线程、消费在采样线程，读-清必须原子
+        private int _displayDeviceChanged = 0;
+        private DeviceChangeWindow? _deviceChangeWindow;
+        private DateTime _lastDeviceReloadUtc = DateTime.MinValue;
+        private static readonly TimeSpan DeviceReloadMinInterval = TimeSpan.FromSeconds(10);
+        private DateTime _deviceWatchSuppressUntilUtc = DateTime.MinValue;
+        private static readonly TimeSpan DeviceWatchSuppressWindow = TimeSpan.FromSeconds(20);
+        // 显卡切换窗口：期间跳过维护任务里的全量 GC / 工作集修剪
+        private DateTime _maintenanceSuppressUntilUtc = DateTime.MinValue;
+        private static readonly TimeSpan ReloadSettleWindow = TimeSpan.FromSeconds(15);
+        // 驱动安装窗口：安装期间抑制“设备变更→重载”，避免重新占用正在更换的旧驱动句柄
+        private DateTime _driverInstallSuppressUntilUtc = DateTime.MinValue;
+        private static readonly TimeSpan DriverInstallSuppressWindow = TimeSpan.FromMinutes(10);
+        private volatile bool _disposed;
 
         // 计时器相关
         private long _tickCounter = 0;
@@ -92,7 +110,11 @@ namespace LiteMonitor.src.SystemServices
             _sensorMap = new SensorMap();
             _networkManager = new NetworkManager(_perfCounterManager);
             _diskManager = new DiskManager();
-            _driverInstaller = new DriverInstaller(cfg, ReloadComputerSafe, ReleaseComputerForDriverInstall);
+            _driverInstaller = new DriverInstaller(cfg,
+                // 先重载、后清窗：清窗在重载之后，
+                // 安装尾部的到来事件在窗口内即被丢弃，不再引发一次冗余重载。
+                () => { ReloadComputerSafe(); _driverInstallSuppressUntilUtc = DateTime.MinValue; },
+                () => { _driverInstallSuppressUntilUtc = DateTime.UtcNow + DriverInstallSuppressWindow; ReleaseComputerForDriverInstall(); });
             _fpsCounter = new FpsCounter(_driverInstaller); // <--- 新增
 
             // ★★★ [修改] 2. 将 Manager 注入给 ValueProvider ★★★
@@ -107,6 +129,11 @@ namespace LiteMonitor.src.SystemServices
                 _lock, 
                 _lastValidMap
             );
+
+            // 启动显卡设备变更监听（只登记显示类设备）：
+            // 收到通知仅置标志，真正的重载交给采样循环，避免在消息线程碰硬件。
+            _deviceChangeWindow = new DeviceChangeWindow(() => Interlocked.Exchange(ref _displayDeviceChanged, 1));
+            _deviceWatchSuppressUntilUtc = DateTime.UtcNow + DeviceWatchSuppressWindow;
 
             // 3. 异步启动 (唯一优化：不卡UI)
             InitializeAsync();
@@ -156,9 +183,9 @@ namespace LiteMonitor.src.SystemServices
                 _computer.IsControllerEnabled = targetState;
 
                 // 触发安全重载
-                // 由于 ReloadComputerSafe 全程持有 _lock，
-                // 而 UpdateAll 和 GetValue 都改用了 TryEnter，
-                // 所以这里会独占 _lock 几秒钟，期间 UI 不会卡死（只会显示空数据）。
+                // 重载全程持有 _lock 几秒钟：UpdateAll 用的是阻塞锁（会后移到下一轮），
+                // GetValue 用 TryEnter（拿不到锁就返回上一帧值），
+                // 故期间 UI 不会卡死（只会显示空数据/上一帧值）。
                 ReloadComputerSafe();
             });
         }
@@ -189,6 +216,10 @@ namespace LiteMonitor.src.SystemServices
                     if (_sensorMap.EnsureFresh(_computer, _cfg))
                     {
                         _valueProvider.PreCacheAllSensors(_sensorMap);
+
+                        // 兜底重建（10 分钟）也可能换了映射目标（设备变更通知被漏掉时的退路）：
+                        // 作废显存容量闩锁，避免容量模式一直沿旧卡容量。
+                        Settings.DetectedGpuVramTotalGB = 0;
                     }
 
                     // 3秒一次 (慢速扫描)
@@ -245,11 +276,43 @@ namespace LiteMonitor.src.SystemServices
                 }
                 
                 // 任务错峰执行 (调用 SystemOptimizer)
-                SystemOptimizer.RunMaintenanceTasks(_secondsCounter);
+                // 显卡切换窗口内**只压住重活**（全量 GC / 工作集修剪），
+                // 流量保存等轻任务照常（整段跳过会连带漏掉 TrafficLogger.Save）。
+                SystemOptimizer.RunMaintenanceTasks(_secondsCounter, allowHeavyCleanup: DateTime.UtcNow >= _maintenanceSuppressUntilUtc);
                 
                 OnValuesUpdated?.Invoke();
             }
             catch { }
+
+            // 显卡设备变更（禁用/启用/驱动更新）→ 与 [Fix #290] 共用同一条安全重载通道
+            // 消费原则：只在“确实触发重载”或“静默期内明确丢弃”时才清标志；
+            // 限流窗口内 / 重载进行中一律保留标志，下一轮再判——
+            // 事件丢失会让恢复一直等到 10 分钟兜底。
+            if (Volatile.Read(ref _displayDeviceChanged) != 0 && !_isReloading)
+            {
+                var nowUtc = DateTime.UtcNow;
+
+                // 先判“必须丢弃的窗口”，再判限流触发：
+                // 窗口判定若放在 ShouldTrigger 之后，就只在“限流已拒绝”时才生效——
+                // 驱动安装期间的事件会照旧触发重载（重新占用正在更换的旧驱动句柄）。
+                if (nowUtc < _deviceWatchSuppressUntilUtc || nowUtc < _driverInstallSuppressUntilUtc)
+                {
+                    // ① 启动静默期内的批量“到来”事件（注册时对存量设备投递）；
+                    // ② 驱动安装窗口内的事件（安装完成后本就有一轮重载，此处丢弃不会丢恢复机会）。
+                    Interlocked.Exchange(ref _displayDeviceChanged, 0);
+                    System.Diagnostics.Debug.WriteLine("Device event inside silence/driver-install window — dropped.");
+                }
+                else if (ReloadThrottle.ShouldTrigger(nowUtc, _lastDeviceReloadUtc, DeviceReloadMinInterval, _deviceWatchSuppressUntilUtc))
+                {
+                    Interlocked.Exchange(ref _displayDeviceChanged, 0);
+                    _lastDeviceReloadUtc = nowUtc;
+                    // 切换窗口：同时压住维护任务里的全量 GC / 内存修剪
+                    _maintenanceSuppressUntilUtc = nowUtc + ReloadSettleWindow;
+                    needsReload = true;
+                    System.Diagnostics.Debug.WriteLine("Display device change detected, scheduling reload...");
+                }
+                // 其余情形（限流窗口内）保留标志，下一轮再判。
+            }
 
             // [Fix #290] 硬件故障自动恢复
             // 如果检测到 GPU 丢失或驱动崩溃，触发安全重载以刷新硬件列表
@@ -263,8 +326,13 @@ namespace LiteMonitor.src.SystemServices
                 {
                     try
                     {
-                        await Task.Delay(2000); // 等待 2秒让系统硬件列表稳定
-                        ReloadComputerSafe();
+                        // 给显示切换留足稳定时间：设备被禁用/启用后，
+                        // 显示栈（尤其 RDP/WDDM 路径）需要数秒才稳定；过早重载会与其相互拖拽。
+                        await Task.Delay(5000);
+                        // 延时期间可能已退出程序：退化为不做
+                        if (_disposed) return;
+                        // 设备变更/故障后的重载：跳过内存修剪（见 ReloadComputerSafeCore 注释）
+                        ReloadComputerSafeCore(trimMemory: false);
                     }
                     finally
                     {
@@ -278,6 +346,10 @@ namespace LiteMonitor.src.SystemServices
 
         public void Dispose()
         {
+            // 先置已释放：若放在 Close 之后，已过入口判空的重载任务
+            // 可在等锁期间通过检查，Dispose 释放锁后再执行 _computer.Open()（退出后重开硬件）。
+            _disposed = true;
+
             // ★★★ 核心修复：加锁！防止与正在运行的 UpdateAll() 冲突 ★★★
             lock (_lock)
             {
@@ -292,6 +364,9 @@ namespace LiteMonitor.src.SystemServices
                     System.Diagnostics.Debug.WriteLine($"Dispose Error: {ex.Message}");
                 }
             }
+
+            // 注销设备变更监听并销毁消息窗口（_disposed 已在方法开头置位）
+            try { _deviceChangeWindow?.Dispose(); } catch { }
 
             _valueProvider.Dispose();
             _perfCounterManager.Dispose(); // ★★★ [新增] 释放计数器资源 ★★★
@@ -468,19 +543,38 @@ namespace LiteMonitor.src.SystemServices
             return (forceAll, needCpu, needGpu, needMem, needNet, needDisk, needBat, needMobo, 0);
         }
 
-        private void ReloadComputerSafe()
+        /// <summary>安全重载（保留内存修剪）：驱动安装、控制器热切换等常规路径使用。</summary>
+        private void ReloadComputerSafe() => ReloadComputerSafeCore(trimMemory: true);
+
+        /// <summary>
+        /// 安全重载实现。
+        /// trimMemory=false 用于“显卡设备变更”这类**正处显示切换敏感窗口**的场景：
+        /// 全量 GC + 工作集修剪是进程级重活，我们亲测会让正在切换的显示会话卡顿
+        /// （用户实测：RDP 会话卡死，且仅在本程序运行时出现；关闭程序后同样操作不复现）。
+        /// </summary>
+        private void ReloadComputerSafeCore(bool trimMemory)
         {
+            if (_disposed) return;   // 退出后不再重开硬件
             try
             {
                 lock (_lock)
                 {
+                    // 进锁后复查：等锁期间 Dispose 可能已置位
+                    if (_disposed) return;
+
                     // 1. 清理业务缓存
                     _networkManager.ClearCache();
                     _diskManager.ClearCache();
                     _sensorMap.Clear();
                     
                     _valueProvider.ClearCache();
-                    
+
+                    // 设备变更后的两处必须清理：
+                    // ① “最后有效值”兜底缓存——不清则设备不在时读数会一直冻结在旧值；
+                    // ② 显存总容量闩锁——不清则容量模式仍按旧卡容量显示。
+                    _lastValidMap.Clear();
+                    Settings.DetectedGpuVramTotalGB = 0;
+
                     // 清理扫描器缓存
                     HardwareScanner.ClearCache();
 
@@ -502,14 +596,20 @@ namespace LiteMonitor.src.SystemServices
                     WarmUpBatterySensors();
 
                     DisableSensorHistory();
+
+                    // Rebuild/PreCache 必须在锁内：它们会遍历/预热硬件树
+                    //（Rebuild→WarmUpGpusForMapping→gpu.Update()；PreCache→遍历 _computer.Hardware），
+                    // 与采样循环的 hw.Update() 并发即 LHM 非线程安全区。
+                    _sensorMap.Rebuild(_computer, _cfg);
+                    _valueProvider.PreCacheAllSensors(_sensorMap);
                 }
 
-                _sensorMap.Rebuild(_computer, _cfg);
-                _valueProvider.PreCacheAllSensors(_sensorMap);
-
-                // 4. 优化 T1：重置后再次修剪内存
-                GC.Collect();
-                SystemOptimizer.TrimWorkingSet();
+                // 4. 优化 T1：重置后再次修剪内存（仅常规路径；设备变更窗口内跳过，见方法注释）
+                if (trimMemory)
+                {
+                    GC.Collect();
+                    SystemOptimizer.TrimWorkingSet();
+                }
             }
             catch { }
         }
@@ -654,6 +754,146 @@ namespace LiteMonitor.src.SystemServices
             public void VisitSensor(ISensor sensor) { }
             public void VisitParameter(IParameter parameter) { }
         }
+        #endregion
+
+        #region Device Change Watcher
+
+        /// <summary>
+        /// 显卡设备变更监听：一个隐藏的消息窗口，**只登记“显示适配器类”设备**。
+        /// 显卡被禁用/启用或驱动被更新时，Windows 会发来该设备的“到来/移除”通知；
+        /// 其它设备（U 盘、鼠标等）因未登记，系统不会通知本窗口——这是刻意的收窄：
+        /// 设备变更会触发一次全量硬件重载（含存储/USB 枚举），不该被无关设备插拔唤醒
+        /// （历史上游 #149/#152 “插入 U 盘即报错” 正出在那片区域）。
+        /// </summary>
+        private sealed class DeviceChangeWindow : NativeWindow, IDisposable
+        {
+            private const int WM_DEVICECHANGE = 0x0219;
+            private const int DBT_DEVICEARRIVAL = 0x8000;
+            private const int DBT_DEVICEREMOVECOMPLETE = 0x8004;
+            private const int DBT_DEVTYP_DEVICEINTERFACE = 0x00000005;
+            private const int DEVICE_NOTIFY_WINDOW_HANDLE = 0x00000000;
+
+            // 【关键】必须用“设备**接口**类 GUID”——不是设备安装类 GUID（后者是设备管理器里的分组/图标，
+            // 用在 RegisterDeviceNotification 上会注册不上任何事件）。来源：本机 Windows SDK `shared/ntddvdeo.h`。
+            // ① 显示适配器接口类 {5b45201d-f2f2-4f3b-85bb-30ff1f953599}（显卡的 PnP 接口，启用/禁用 → 到来/移除）
+            // ② 图形设备到来专用 {1ca05180-a699-450a-9a0c-de4fbe3ddd89}（SDK 注释：监听图形设备到来，排除纯计算设备）
+            private static readonly Guid[] WatchedInterfaceClasses =
+            {
+                new Guid("5b45201d-f2f2-4f3b-85bb-30ff1f953599"),
+                new Guid("1ca05180-a699-450a-9a0c-de4fbe3ddd89"),
+            };
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct DEV_BROADCAST_DEVICEINTERFACE
+            {
+                public int dbcc_size;
+                public int dbcc_devicetype;
+                public int dbcc_reserved;
+                public Guid dbcc_classguid;
+                public short dbcc_name;
+            }
+
+            [DllImport("user32.dll", SetLastError = true)]
+            private static extern IntPtr RegisterDeviceNotification(IntPtr hRecipient, IntPtr notificationFilter, int flags);
+
+            [DllImport("user32.dll", SetLastError = true)]
+            private static extern bool UnregisterDeviceNotification(IntPtr handle);
+
+            private readonly Action _onDisplayDeviceChanged;
+            private readonly List<IntPtr> _notifyHandles = new();
+            private bool _disposed;
+
+            public DeviceChangeWindow(Action onDisplayDeviceChanged)
+            {
+                _onDisplayDeviceChanged = onDisplayDeviceChanged;
+
+                // 普通（不可见）顶层窗口：CreateHandle 后即具备消息泵；不调用 Show 则永不显示
+                // （创建失败不应影响主流程——退化为“不监听设备变更”，仍有 10 分钟兜底重建）
+                try { CreateHandle(new CreateParams { Caption = "LiteMonitor.DeviceWatcher" }); }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"CreateHandle failed: {ex.Message}");
+                }
+
+                if (Handle == IntPtr.Zero)
+                {
+                    System.Diagnostics.Debug.WriteLine("Device watcher unavailable (no window handle)");
+                    return;
+                }
+
+                try
+                {
+                    // 逐个接口类注册（任一个命中即可收到显卡的到来/移除）
+                    foreach (var ifaceClass in WatchedInterfaceClasses)
+                    {
+                        var filter = new DEV_BROADCAST_DEVICEINTERFACE
+                        {
+                            dbcc_size = Marshal.SizeOf<DEV_BROADCAST_DEVICEINTERFACE>(),
+                            dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE,
+                            dbcc_classguid = ifaceClass
+                        };
+
+                        IntPtr buffer = Marshal.AllocHGlobal(filter.dbcc_size);
+                        try
+                        {
+                            Marshal.StructureToPtr(filter, buffer, false);
+                            var h = RegisterDeviceNotification(Handle, buffer, DEVICE_NOTIFY_WINDOW_HANDLE);
+                            if (h != IntPtr.Zero) _notifyHandles.Add(h);
+                        }
+                        finally { Marshal.FreeHGlobal(buffer); }
+                    }
+
+                    System.Diagnostics.Debug.WriteLine($"Device watcher registered, handles={_notifyHandles.Count}/{WatchedInterfaceClasses.Length}");
+                }
+                catch (Exception ex)
+                {
+                    // 注册失败不致命：退化为“不监听设备变更”，其余功能不受影响；另有 10 分钟兜底重建
+                    System.Diagnostics.Debug.WriteLine($"RegisterDeviceNotification failed: {ex.Message}");
+                }
+            }
+
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == WM_DEVICECHANGE)
+                {
+                    int evt = m.WParam.ToInt32();
+                    if ((evt == DBT_DEVICEARRIVAL || evt == DBT_DEVICEREMOVECOMPLETE) && IsDeviceInterfacePayload(m.LParam))
+                    {
+                        // 只登记了显示类接口，且载荷已校验为设备接口事件；此处只置标志，不做任何硬件操作
+                        _onDisplayDeviceChanged();
+                    }
+                }
+                base.WndProc(ref m);
+            }
+
+            /// <summary>校验载荷确实是设备接口事件（dbcc_devicetype == DBT_DEVTYP_DEVICEINTERFACE）。</summary>
+            private static bool IsDeviceInterfacePayload(IntPtr lParam)
+            {
+                try
+                {
+                    if (lParam == IntPtr.Zero) return false;
+                    // DEV_BROADCAST_HDR 布局：DWORD dbch_size; DWORD dbch_devicetype; …
+                    return Marshal.ReadInt32(lParam, 4) == DBT_DEVTYP_DEVICEINTERFACE;
+                }
+                catch { return false; }
+            }
+
+            public void Dispose()
+            {
+                if (_disposed) return;
+                _disposed = true;
+
+                try
+                {
+                    foreach (var h in _notifyHandles) UnregisterDeviceNotification(h);
+                    _notifyHandles.Clear();
+                }
+                catch { }
+
+                try { if (Handle != IntPtr.Zero) DestroyHandle(); } catch { }
+            }
+        }
+
         #endregion
     }
 }

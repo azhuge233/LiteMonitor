@@ -82,7 +82,7 @@ namespace LiteMonitor.src.SystemServices
         // ===========================================================
         // 获取最佳磁盘数值 (已简化：Preferred 逻辑已移至 ValueProvider 静态缓存)
         // ===========================================================
-        public float? GetBestValue(string key, Computer computer, Settings cfg, Dictionary<string, float> lastValidMap, object syncLock)
+        public float? GetBestValue(string key, Computer computer, Settings cfg, System.Collections.Concurrent.ConcurrentDictionary<string, float> lastValidMap, object syncLock)
         {
             // 1. 运行时缓存 (针对自动选择模式)
             if (_cachedDiskHw != null)
@@ -220,7 +220,7 @@ namespace LiteMonitor.src.SystemServices
             return best;
         }
 
-        private float? ReadDiskSensor(IHardware hw, string key, Dictionary<string, float> lastValidMap, object syncLock)
+        private float? ReadDiskSensor(IHardware hw, string key, System.Collections.Concurrent.ConcurrentDictionary<string, float> lastValidMap, object syncLock)
         {
             // ★★★ [新增] 温度支持 ★★★
             if (key == "DISK.Temp")
@@ -239,7 +239,7 @@ namespace LiteMonitor.src.SystemServices
             return SafeRead(null, key, lastValidMap, syncLock);
         }
 
-        private float? SafeRead(ISensor? s, string key, Dictionary<string, float> lastValidMap, object syncLock)
+        private float? SafeRead(ISensor? s, string key, System.Collections.Concurrent.ConcurrentDictionary<string, float> lastValidMap, object syncLock)
         {
             if (s?.Value is float v && !float.IsNaN(v))
             {

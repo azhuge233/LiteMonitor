@@ -161,7 +161,8 @@ namespace LiteMonitor
             // 但因为 delta (0.06) 刚刚好大于 0.05 可能触发更新，
             // 但如果是 0.04 -> 0.00，delta=0.04 < 0.05，导致文本缓存不更新，UI 仍显示 0.04。
             // 考虑到显示精度通常为 0.00，阈值应至少小于 0.01。
-            if (Math.Abs(DisplayValue - _cachedDisplayValue) > 0.005f || powerChanged)
+            if (Math.Abs(DisplayValue - _cachedDisplayValue) > 0.005f || powerChanged ||
+                float.IsNaN(DisplayValue) != float.IsNaN(_cachedDisplayValue))   // NaN（无有效值）状态变化也要刷新
             {
                 _cachedDisplayValue = DisplayValue;
                 if (isBat) _cachedPowerState = currentPower;
@@ -208,10 +209,11 @@ namespace LiteMonitor
                 // Only calculate color if NOT a plugin item (already handled above)
                 if (!Key.StartsWith("DASH."))
                 {
-                    CachedColorState = MetricUtils.GetState(Key, DisplayValue);
+                    CachedColorState = float.IsNaN(DisplayValue) ? 0 : MetricUtils.GetState(Key, DisplayValue);
                 }
-                
-                CachedPercent = MetricUtils.GetProgressValue(Key, DisplayValue);
+
+                // 无有效值（NaN）→ 进度条归零，避免 NaN 参与几何计算
+                CachedPercent = float.IsNaN(DisplayValue) ? 0f : MetricUtils.GetProgressValue(Key, DisplayValue);
             }
             return isHorizontal ? _cachedHorizontalText : _cachedNormalText;
         }
@@ -228,6 +230,12 @@ namespace LiteMonitor
         {
             if (!Value.HasValue) return;
             float target = Value.Value;
+
+            // 无有效值（NaN）→ 直接落到 NaN（显示 —）；
+            // 从 NaN 恢复为真实值 → 立即跳变，不做平滑（否则 NaN 会污染后续插值，永远算不回来）。
+            if (float.IsNaN(target)) { DisplayValue = float.NaN; return; }
+            if (float.IsNaN(DisplayValue)) { DisplayValue = target; return; }
+
             float diff = Math.Abs(target - DisplayValue);
             
             // ★★★ [Fix] 核心修复：微小差异直接吸附，而不是跳过 ★★★

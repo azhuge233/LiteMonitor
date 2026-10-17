@@ -485,7 +485,7 @@ namespace LiteMonitor.src.UI.SettingsPage
         private void Reorder_RestoreDefaultOrder(object? sender, EventArgs e) => RestoreDefaultOrder();
 
         /// <summary>
-        /// 恢复当前页签的出厂默认顺序（用户裁定）：只作用于当前页签、只恢复顺序。
+        /// 恢复当前页签的出厂默认顺序：只作用于当前页签、只恢复顺序。
         /// 可见性 / 别名 / 单位 / 标签一律不动；控件树即状态，仍需用户点「保存」才落盘（「取消」可放弃）。
         /// </summary>
         private void RestoreDefaultOrder()

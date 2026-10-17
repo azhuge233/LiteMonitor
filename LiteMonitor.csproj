@@ -12,9 +12,9 @@
     <DebugType>none</DebugType>
 		<DebugSymbols>false</DebugSymbols>
 	  
-    <Version>1.5.0</Version><!-- 程序主版本（UpdateChecker / About用） -->
+    <Version>1.5.1</Version><!-- 程序主版本（UpdateChecker / About用） -->
     <AssemblyVersion>1.0.0.0</AssemblyVersion><!-- 稳定不动 -->
-    <FileVersion>1.5.0.0</FileVersion><!-- 文件属性显示 -->
+    <FileVersion>1.5.1.0</FileVersion><!-- 文件属性显示 -->
 
     <!-- .NET 10 的 WinForms 设计器分析器（WFO1000）：本项目自定义控件属性均为运行时代码设置，
          无 .Designer.cs/.resx 序列化使用（已核实），故整项抑制，保持与 .NET 8 行为一致。 -->

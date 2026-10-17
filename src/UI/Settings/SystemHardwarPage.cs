@@ -101,13 +101,24 @@ namespace LiteMonitor.src.UI.SettingsPage
                         return byName.Count == 1 ? byName[0] : null;
                     }
 
+                    var selected = ResolveCurrent();
+
                     combo.Inner.BeginUpdate();
                     combo.Inner.Items.Clear();
                     combo.AddItem(strAuto, "");
                     foreach (var item in data) combo.AddItem(item.Label, item.Value);
 
-                    var selected = ResolveCurrent();
-                    combo.SelectValue(selected?.Value ?? "");
+                    // 保存的显卡当前不在列表中（例如被禁用）：注入占位项并保持选中，
+                    // 避免下拉回落到“自动”后保存时把用户偏好覆盖为空（策略见 Core/GpuChoicePolicy）。
+                    if (GpuChoicePolicy.ShouldInjectPlaceholder(selected != null, currentVal))
+                    {
+                        combo.AddItem(GpuChoicePolicy.PlaceholderLabel(currentVal), currentVal);
+                        combo.SelectValue(currentVal);
+                    }
+                    else
+                    {
+                        combo.SelectValue(selected?.Value ?? "");
+                    }
                     combo.Inner.EndUpdate();
                 }
 

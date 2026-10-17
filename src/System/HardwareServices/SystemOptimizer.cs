@@ -76,13 +76,16 @@ namespace LiteMonitor.src.SystemServices
         /// 执行定时维护任务 (流量保存、GC 优化、内存修剪)
         /// </summary>
         /// <param name="secondsCounter">系统运行秒数计数器</param>
-        public static void RunMaintenanceTasks(long secondsCounter)
+        /// <param name="allowHeavyCleanup">是否执行重型清理（全量 GC / 工作集修剪）；流量保存不受其影响</param>
+        public static void RunMaintenanceTasks(long secondsCounter, bool allowHeavyCleanup = true)
         {
-            // 1. 流量保存: 每 60 秒 (Offset 5s: 避开整点)
+            // 1. 流量保存: 每 60 秒 (Offset 5s: 避开整点) —— 轻任务，不受切换窗口压制
             if (secondsCounter % 60 == 5)
             {
                 TrafficLogger.Save();
             }
+
+            if (!allowHeavyCleanup) return;   // 显卡切换/驱动安装窗口内只跳重活
 
             // 2. 内存软清理: 每 180 秒 (Offset 30s)
             if (secondsCounter % 180 == 30)

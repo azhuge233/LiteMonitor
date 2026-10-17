@@ -212,7 +212,8 @@ namespace LiteMonitor.src.WebServer
 
                     // [Fix] 恢复过滤逻辑：跳过没有数据的监控项（如台式机的电池），以符合业务屏蔽需求
                     // 布局顺序问题已由 CSS order (gidx) 机制解决，即使数据晚到也会插入正确位置
-                    if (!val.HasValue) continue;
+                    // NaN（显卡不在场）同样跳过：否则 pct 会写成 NaN，System.Text.Json 拒写导致整份快照生成失败
+                    if (!val.HasValue || float.IsNaN(val.Value)) continue;
 
                     if (val.HasValue)
                     {

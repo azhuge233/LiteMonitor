@@ -104,7 +104,11 @@ namespace LiteMonitor.src.Core
         /// </summary>
         public static string GetValueStr(string key, float? value, bool compact = false)
         {
-            float v = value ?? 0.0f;
+            // 无有效值（显卡不在场等）→ 显示 —：不再退化为 0
+            // （null → 0 会把“设备消失”显示成“读数为零”，正是用户报告的观感问题）。
+            if (!value.HasValue || float.IsNaN(value.Value)) return "—";
+
+            float v = value.Value;
             var type = GetType(key);
 
             // 1. 内存特殊处理 (容量 vs 百分比)
@@ -179,6 +183,11 @@ namespace LiteMonitor.src.Core
         /// </summary>
         public static string GetUnitStr(string key, float? value, UnitContext context)
         {
+            // 无有效值 → 不带单位（显示层呈现 —，避免拼出“—%”这类结果）。
+            // 例外：插件/文本项（DASH.*）的单位来自插件自身的 .Unit 查询（传进来的本就是 null），
+            // 不能因此清空单位。
+            if ((!value.HasValue || float.IsNaN(value.Value)) && !key.StartsWith("DASH.", StringComparison.Ordinal)) return "";
+
             var type = GetType(key);
             
             // 1. 内存 (GB vs %)
@@ -189,9 +198,12 @@ namespace LiteMonitor.src.Core
 
                 double totalGB = (key.IndexOf("MEM", StringComparison.OrdinalIgnoreCase) >= 0) ? Settings.DetectedRamTotalGB : Settings.DetectedGpuVramTotalGB;
                 
+                // 拿不到总容量时（设备切换后的短暂窗口）回落到 %：
+                // 否则会把百分比原样配上 GB 单位，显示“45 GB”这类假数值。
+                // 保留 value.HasValue 判空：守卫带 DASH. 例外后，编译器无法再证明此处非空（CS8629）。
                 return (totalGB > 0 && value.HasValue) 
                     ? FormatDataSizeParts((value.Value / 100.0) * totalGB * 1073741824.0, -1).unit 
-                    : "GB";
+                    : "%";
             }
             
 
@@ -383,6 +395,9 @@ namespace LiteMonitor.src.Core
         /// </summary>
         public static double GetProgressValue(string key, double value)
         {
+            // 无有效值（NaN/∞）：进度归零，避免 NaN 传播到几何计算与 JSON 序列化。
+            if (double.IsNaN(value) || double.IsInfinity(value)) return 0.0;
+
             // 1. 获取基础百分比 (自适应或归一化)
             // [Refactor] Inlined GetUnifiedPercent logic
             var type = GetType(key);

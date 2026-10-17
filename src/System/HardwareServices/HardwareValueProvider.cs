@@ -17,7 +17,7 @@ namespace LiteMonitor.src.SystemServices
         private readonly DiskManager _diskManager;
         private readonly FpsCounter _fpsCounter;
         private readonly object _lock;
-        private readonly Dictionary<string, float> _lastValidMap; 
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, float> _lastValidMap; 
         
         // 子服务与处理器
         private readonly PerformanceCounterManager _perfManager;
@@ -41,7 +41,7 @@ namespace LiteMonitor.src.SystemServices
         private string _lastPrefNet = "";
         private string _lastPrefGpu = "";
         
-        public HardwareValueProvider(Computer c, Settings s, SensorMap map, NetworkManager net, DiskManager disk, FpsCounter fpsCounter,PerformanceCounterManager perfManager, object syncLock, Dictionary<string, float> lastValid)
+        public HardwareValueProvider(Computer c, Settings s, SensorMap map, NetworkManager net, DiskManager disk, FpsCounter fpsCounter,PerformanceCounterManager perfManager, object syncLock, System.Collections.Concurrent.ConcurrentDictionary<string, float> lastValid)
         {
             _computer = c;
             _cfg = s;
@@ -271,9 +271,8 @@ namespace LiteMonitor.src.SystemServices
                 if (!lockTaken) 
                 {
                     // ★★★ [Fix] 如果无法获取锁（硬件正在重载），优先返回上一帧的有效值，防止 UI 闪烁 ★★★
-                    // 因为 _lastValidMap 仅在 GetValue 内部（即 UI 线程）写入，
-                    // 而后台线程（UpdateAll/Reload）只读不写或完全不访问它，
-                    // 所以此时读取是安全的（虽然没有锁，但没有并发写入）。
+                    // _lastValidMap 现为 ConcurrentDictionary：重载线程会在锁内清空它，
+                    // 因此这里无锁读取才是安全的（原为普通 Dictionary，清空与无锁读并发属未定义行为）。
                     if (_lastValidMap.TryGetValue(key, out float lastVal)) return lastVal;
                     return null;
                 }
@@ -515,10 +514,23 @@ namespace LiteMonitor.src.SystemServices
                         _lastValidMap[key] = val.Value; 
                         result = val.Value; 
                     }
+                    // （瞬时无值仍走兜底：启动初期/传感器短暂无值不应该闪 —；设备不在场的情形见下方 NaN 分支）
                     else if (_lastValidMap.TryGetValue(key, out var last))
                     {
                         result = last;
                     }
+                }
+
+                // 显卡不在场：该键在映射重建后已不存在（设备被禁用/移除）→ 明确回 NaN，
+                // 让显示层呈现 —，而不是继续吐上次的旧值。
+                // 判据是“键已不在映射缓存中”：启动初期键在、仅未读数，不会命中这条（保持 0/空）。
+                // 判据收紧：键不在映射缓存 **且** 无任何显卡被映射（CachedGpu == null）
+                // 才算“设备不在场”；只看“键不在缓存”会把“本机没有这个传感器”（如核显机的 GPU.Fan）
+                // 也判成设备缺席，超出本判据的适用范围。
+                if (result == null && !skipGenericFallback &&
+                    LastValidPolicy.ShouldReportMissing(key, _manualSensorCache.ContainsKey(key), _sensorMap.CachedGpu != null))
+                {
+                    result = float.NaN;
                 }
 
                 // ★★★ [新增 4] 写入缓存并返回 ★★★
