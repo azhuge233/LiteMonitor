@@ -28,6 +28,8 @@ namespace LiteMonitor.src.SystemServices
         
         // 显卡硬件缓存 (用于快速定位)
         public IHardware? CachedGpu { get; private set; }
+        // 只有配置实际匹配到唯一显卡时才启用严格单卡刷新。
+        public bool HasExplicitGpuSelection { get; private set; }
         // ★★★ [新增] 缓存总线传感器 (用于 Zen 5 频率修正) ★★★
         public ISensor? CpuBusSpeedSensor { get; private set; }
 
@@ -91,6 +93,7 @@ namespace LiteMonitor.src.SystemServices
                 _map.Clear();
                 CpuCoreCache.Clear();
                 CachedGpu = null;
+                HasExplicitGpuSelection = false;
                 CpuBusSpeedSensor = null;
                 // _lastSensorFingerprint = 0; // 已移除
             }
@@ -114,6 +117,22 @@ namespace LiteMonitor.src.SystemServices
             lock (_lock)
             {
                 return new Dictionary<string, ISensor>(_map);
+            }
+        }
+
+        public bool IsMappedGpuSensorHardware(IHardware hw)
+        {
+            lock (_lock)
+            {
+                foreach (var kv in _map)
+                {
+                    if (kv.Key.StartsWith("GPU.", StringComparison.OrdinalIgnoreCase) &&
+                        ReferenceEquals(kv.Value.Hardware, hw))
+                    {
+                        return true;
+                    }
+                }
+                return false;
             }
         }
 
@@ -195,7 +214,7 @@ namespace LiteMonitor.src.SystemServices
                     // ★★★ [新增] GPU 风扇映射 ★★★
                     var fan = hw.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Fan);
                     if (fan == null) fan = hw.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Control);
-                    if (fan != null) newMap["GPU.Fan"] = fan;
+                    if (fan != null) newMap.TryAdd("GPU.Fan", fan);
                 }
                 
                 // ★★★ [新增] 收集主板/SuperIO 传感器 ★★★
@@ -325,6 +344,7 @@ namespace LiteMonitor.src.SystemServices
                 
                 CpuCoreCache = newCpuCache;
                 CachedGpu = newGpu;
+                HasExplicitGpuSelection = selectedGpu != null;
                 CpuBusSpeedSensor = newBusSensor; // ★ 更新 Bus Sensor 缓存
                 
                 _lastMapBuild = DateTime.Now;
